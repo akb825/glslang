@@ -15,6 +15,7 @@ set(HEADERS
     hlslOpMap.h
     hlslTokenStream.h
     hlslGrammar.h
+    hlslIncluder.h
     hlslParseables.h)
 
 add_library(HLSL STATIC ${SOURCES} ${HEADERS})

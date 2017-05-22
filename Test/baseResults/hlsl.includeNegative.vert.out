@@ -1,0 +1,42 @@
+hlsl.includeNegative.vert
+ERROR: ./foo.h:1: '#error' : should not be included  
+ERROR: ./inc2/../foo.h:1: '#error' : should not be included  
+ERROR: ./parentBad:3: '#error' : bad parent  
+ERROR: 0:7: '#error' : in main  
+ERROR: 0:6: '' : function does not return a value: @main
+ERROR: 5 compilation errors.  No code generated.
+
+
+Shader version: 500
+ERROR: node is still EOpNull!
+0:6  Function Definition: @main( ( temp 4-component vector of float)
+0:6    Function Parameters: 
+0:6  Function Definition: main( ( temp void)
+0:6    Function Parameters: 
+0:?     Sequence
+0:6      move second child to first child ( temp 4-component vector of float)
+0:?         '@entryPointOutput' ( out 4-component vector of float Position)
+0:6        Function Call: @main( ( temp 4-component vector of float)
+0:?   Linker Objects
+0:?     'anon@0' (layout( row_major std140) uniform block{ uniform int a})
+0:?     '@entryPointOutput' ( out 4-component vector of float Position)
+
+
+Linked vertex stage:
+
+
+Shader version: 500
+ERROR: node is still EOpNull!
+0:6  Function Definition: @main( ( temp 4-component vector of float)
+0:6    Function Parameters: 
+0:6  Function Definition: main( ( temp void)
+0:6    Function Parameters: 
+0:?     Sequence
+0:6      move second child to first child ( temp 4-component vector of float)
+0:?         '@entryPointOutput' ( out 4-component vector of float Position)
+0:6        Function Call: @main( ( temp 4-component vector of float)
+0:?   Linker Objects
+0:?     'anon@0' (layout( row_major std140) uniform block{ uniform int a})
+0:?     '@entryPointOutput' ( out 4-component vector of float Position)
+
+SPIR-V is not generated for failed compile or link

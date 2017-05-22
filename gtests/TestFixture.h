@@ -50,6 +50,7 @@
 #include "SPIRV/SPVRemapper.h"
 #include "StandAlone/ResourceLimits.h"
 #include "glslang/Public/ShaderLang.h"
+#include "hlsl/hlslIncluder.h"
 
 #include "Initializer.h"
 #include "Settings.h"
@@ -183,10 +184,18 @@ public:
         const int shaderLengths = static_cast<int>(code.size());
 
         shader->setStringsWithLengths(&shaderStrings, &shaderLengths, 1);
-        if (!entryPointName.empty()) shader->setEntryPoint(entryPointName.c_str());
-        return shader->parse(
-                (resources ? resources : &glslang::DefaultTBuiltInResource),
-                defaultVersion, isForwardCompatible, controls);
+        if (!entryPointName.empty())
+            shader->setEntryPoint(entryPointName.c_str());
+        if (controls & EShMsgReadHlsl) {
+            HlslIncluder includer;
+            return shader->parse(
+                    (resources ? resources : &glslang::DefaultTBuiltInResource),
+                    defaultVersion, isForwardCompatible, controls, includer);
+        } else {
+            return shader->parse(
+                    (resources ? resources : &glslang::DefaultTBuiltInResource),
+                    defaultVersion, isForwardCompatible, controls);
+        }
     }
 
     // Compiles and links the given source |code| of the given shader
