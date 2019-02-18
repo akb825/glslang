@@ -26,7 +26,15 @@ uniform UBO {
     uvec4 unused;
 } ubo;
 
-out float outval;
+struct OutputStruct {
+    float val;
+    vec3 a;
+    vec2 b[4];
+    mat2x2 c;
+};
+
+out OutputStruct outval;
+out float outarr[3];
 
 void main()
 {
@@ -40,5 +48,6 @@ void main()
     f += ubo.verts[gl_InstanceID].position[0];
     f += ubo.flt[gl_InstanceID];
     TriangleInfo tlocal[5] = t;
-    outval = f;
+    outval.val = f;
+    outarr[2] = f;
 }
