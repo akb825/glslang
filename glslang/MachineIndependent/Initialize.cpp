@@ -4928,6 +4928,34 @@ void TBuiltIns::initialize(int version, EProfile profile, const SpvVersion& spvV
     commonBuiltins.append("void controlBarrier(int, int, int, int);\n"
                           "void memoryBarrier(int, int, int);\n");
 
+    if (profile != EEsProfile && version >= 450) {
+        // coopMatStoreNV perhaps ought to have "out" on the buf parameter, but
+        // adding it introduces undesirable tempArgs on the stack. What we want
+        // is more like "buf" thought of as a pointer value being an in parameter.
+        stageBuiltins[EShLangCompute].append(
+            "void coopMatLoadNV(out fcoopmatNV m, volatile coherent float16_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatLoadNV(out fcoopmatNV m, volatile coherent float[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatLoadNV(out fcoopmatNV m, volatile coherent uint8_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatLoadNV(out fcoopmatNV m, volatile coherent uint16_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatLoadNV(out fcoopmatNV m, volatile coherent uint[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatLoadNV(out fcoopmatNV m, volatile coherent uint64_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatLoadNV(out fcoopmatNV m, volatile coherent uvec2[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatLoadNV(out fcoopmatNV m, volatile coherent uvec4[] buf, uint element, uint stride, bool colMajor);\n"
+
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent float16_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent float[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent float64_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent uint8_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent uint16_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent uint[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent uint64_t[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent uvec2[] buf, uint element, uint stride, bool colMajor);\n"
+            "void coopMatStoreNV(fcoopmatNV m, volatile coherent uvec4[] buf, uint element, uint stride, bool colMajor);\n"
+
+            "fcoopmatNV coopMatMulAddNV(fcoopmatNV A, fcoopmatNV B, fcoopmatNV C);\n"
+            );
+    }
+
     //============================================================================
     //
     // Prototypes for built-in functions seen by fragment shaders only.
@@ -5766,7 +5794,14 @@ void TBuiltIns::initialize(int version, EProfile profile, const SpvVersion& spvV
             "patch out highp float gl_TessLevelOuter[4];"
             "patch out highp float gl_TessLevelInner[2];"
             "patch out highp vec4 gl_BoundingBoxOES[2];"
+            "patch out highp vec4 gl_BoundingBoxEXT[2];"
             "\n");
+        if (profile == EEsProfile && version >= 320) {
+            stageBuiltins[EShLangTessControl].append(
+                "patch out highp vec4 gl_BoundingBox[2];"
+                "\n"
+            );
+        }
     }
 
     if ((profile != EEsProfile && version >= 140) ||
@@ -7986,10 +8021,16 @@ void TBuiltIns::identifyBuiltIns(int version, EProfile profile, const SpvVersion
 
     case EShLangTessControl:
         if (profile == EEsProfile && version >= 310) {
+            BuiltInVariable("gl_BoundingBoxEXT", EbvBoundingBox, symbolTable);
+            symbolTable.setVariableExtensions("gl_BoundingBoxEXT", 1,
+                                              &E_GL_EXT_primitive_bounding_box);
             BuiltInVariable("gl_BoundingBoxOES", EbvBoundingBox, symbolTable);
-            if (version < 320)
-                symbolTable.setVariableExtensions("gl_BoundingBoxOES", Num_AEP_primitive_bounding_box,
-                                                  AEP_primitive_bounding_box);
+            symbolTable.setVariableExtensions("gl_BoundingBoxOES", 1,
+                                              &E_GL_OES_primitive_bounding_box);
+
+            if (version >= 320) {
+                BuiltInVariable("gl_BoundingBox", EbvBoundingBox, symbolTable);
+            }
         }
 
         // Fall through
@@ -8658,6 +8699,11 @@ void TBuiltIns::identifyBuiltIns(int version, EProfile profile, const SpvVersion
 
             symbolTable.setFunctionExtensions("subgroupMemoryBarrierShared", 1, &E_GL_KHR_shader_subgroup_basic);
         }
+
+        symbolTable.setFunctionExtensions("coopMatLoadNV",              1, &E_GL_NV_cooperative_matrix);
+        symbolTable.setFunctionExtensions("coopMatStoreNV",             1, &E_GL_NV_cooperative_matrix);
+        symbolTable.setFunctionExtensions("coopMatMulAddNV",            1, &E_GL_NV_cooperative_matrix);
+
         break;
 #ifdef NV_EXTENSIONS
     case EShLangRayGenNV:
@@ -9462,6 +9508,9 @@ void TBuiltIns::identifyBuiltIns(int version, EProfile profile, const SpvVersion
             symbolTable.relateToOperator("fwidthCoarse",EOpFwidthCoarse);
         }
 #endif
+        symbolTable.relateToOperator("coopMatLoadNV",              EOpCooperativeMatrixLoad);
+        symbolTable.relateToOperator("coopMatStoreNV",             EOpCooperativeMatrixStore);
+        symbolTable.relateToOperator("coopMatMulAddNV",            EOpCooperativeMatrixMulAdd);
         break;
 
 #ifdef NV_EXTENSIONS
