@@ -68,7 +68,7 @@
 // This should always increase, as some paths to do not consume
 // a more major number.
 // It should increment by one when new functionality is added.
-#define GLSLANG_MINOR_VERSION 12
+#define GLSLANG_MINOR_VERSION 13
 
 //
 // Call before doing any other compiler/linker operations.
@@ -432,9 +432,12 @@ public:
     void addUniformLocationOverride(const char* name, int loc);
     void setUniformLocationBase(int base);
     void setInvertY(bool invert);
+#ifdef ENABLE_HLSL
     void setHlslIoMapping(bool hlslIoMap);
     void setFlattenUniformArrays(bool flatten);
+#endif
     void setNoStorageFormat(bool useUnknownFormat);
+    void setNanMinMaxClamp(bool nanMinMaxClamp);
     void setTextureSamplerTransformMode(EShTextureSamplerTransformMode mode);
 
     // For setting up the environment (cleared to nothingness in the constructor).
@@ -458,8 +461,12 @@ public:
         environment.target.language = lang;
         environment.target.version = version;
     }
+#ifdef ENABLE_HLSL
     void setEnvTargetHlslFunctionality1() { environment.target.hlslFunctionality1 = true; }
     bool getEnvTargetHlslFunctionality1() const { return environment.target.hlslFunctionality1; }
+#else
+    bool getEnvTargetHlslFunctionality1() const { return false; }
+#endif
 
     // Interface to #include handlers.
     //
@@ -610,6 +617,8 @@ private:
     TShader& operator=(TShader&);
 };
 
+#ifndef GLSLANG_WEB
+
 //
 // A reflection database and its interface, consistent with the OpenGL API reflection queries.
 //
@@ -645,8 +654,9 @@ protected:
     const TType* type;
 };
 
-class TReflection;
-class TIoMapper;
+class  TReflection;
+class  TIoMapper;
+struct TVarEntryInfo;
 
 // Allows to customize the binding layout after linking.
 // All used uniform variables will invoke at least validateBinding.
@@ -667,52 +677,64 @@ class TIoMapper;
 // notifiy callbacks, this phase ends with a call to endNotifications.
 // Phase two starts directly after the call to endNotifications
 // and calls all other callbacks to validate and to get the
-// bindings, sets, locations, component and color indices. 
+// bindings, sets, locations, component and color indices.
 //
 // NOTE: that still limit checks are applied to bindings and sets
 // and may result in an error.
 class TIoMapResolver
 {
 public:
-  virtual ~TIoMapResolver() {}
+    virtual ~TIoMapResolver() {}
 
-  // Should return true if the resulting/current binding would be okay.
-  // Basic idea is to do aliasing binding checks with this.
-  virtual bool validateBinding(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Should return a value >= 0 if the current binding should be overridden.
-  // Return -1 if the current binding (including no binding) should be kept.
-  virtual int resolveBinding(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Should return a value >= 0 if the current set should be overridden.
-  // Return -1 if the current set (including no set) should be kept.
-  virtual int resolveSet(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Should return a value >= 0 if the current location should be overridden.
-  // Return -1 if the current location (including no location) should be kept.
-  virtual int resolveUniformLocation(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Should return true if the resulting/current setup would be okay.
-  // Basic idea is to do aliasing checks and reject invalid semantic names.
-  virtual bool validateInOut(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Should return a value >= 0 if the current location should be overridden.
-  // Return -1 if the current location (including no location) should be kept.
-  virtual int resolveInOutLocation(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Should return a value >= 0 if the current component index should be overridden.
-  // Return -1 if the current component index (including no index) should be kept.
-  virtual int resolveInOutComponent(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Should return a value >= 0 if the current color index should be overridden.
-  // Return -1 if the current color index (including no index) should be kept.
-  virtual int resolveInOutIndex(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Notification of a uniform variable
-  virtual void notifyBinding(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Notification of a in or out variable
-  virtual void notifyInOut(EShLanguage stage, const char* name, const TType& type, bool is_live) = 0;
-  // Called by mapIO when it has finished the notify pass
-  virtual void endNotifications(EShLanguage stage) = 0;
-  // Called by mapIO when it starts its notify pass for the given stage
-  virtual void beginNotifications(EShLanguage stage) = 0;
-  // Called by mipIO when it starts its resolve pass for the given stage
-  virtual void beginResolve(EShLanguage stage) = 0;
-  // Called by mapIO when it has finished the resolve pass
-  virtual void endResolve(EShLanguage stage) = 0;
+    // Should return true if the resulting/current binding would be okay.
+    // Basic idea is to do aliasing binding checks with this.
+    virtual bool validateBinding(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Should return a value >= 0 if the current binding should be overridden.
+    // Return -1 if the current binding (including no binding) should be kept.
+    virtual int resolveBinding(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Should return a value >= 0 if the current set should be overridden.
+    // Return -1 if the current set (including no set) should be kept.
+    virtual int resolveSet(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Should return a value >= 0 if the current location should be overridden.
+    // Return -1 if the current location (including no location) should be kept.
+    virtual int resolveUniformLocation(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Should return true if the resulting/current setup would be okay.
+    // Basic idea is to do aliasing checks and reject invalid semantic names.
+    virtual bool validateInOut(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Should return a value >= 0 if the current location should be overridden.
+    // Return -1 if the current location (including no location) should be kept.
+    virtual int resolveInOutLocation(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Should return a value >= 0 if the current component index should be overridden.
+    // Return -1 if the current component index (including no index) should be kept.
+    virtual int resolveInOutComponent(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Should return a value >= 0 if the current color index should be overridden.
+    // Return -1 if the current color index (including no index) should be kept.
+    virtual int resolveInOutIndex(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Notification of a uniform variable
+    virtual void notifyBinding(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Notification of a in or out variable
+    virtual void notifyInOut(EShLanguage stage, TVarEntryInfo& ent) = 0;
+    // Called by mapIO when it starts its notify pass for the given stage
+    virtual void beginNotifications(EShLanguage stage) = 0;
+    // Called by mapIO when it has finished the notify pass
+    virtual void endNotifications(EShLanguage stage) = 0;
+    // Called by mipIO when it starts its resolve pass for the given stage
+    virtual void beginResolve(EShLanguage stage) = 0;
+    // Called by mapIO when it has finished the resolve pass
+    virtual void endResolve(EShLanguage stage) = 0;
+    // Called by mapIO when it starts its symbol collect for teh given stage
+    virtual void beginCollect(EShLanguage stage) = 0;
+    // Called by mapIO when it has finished the symbol collect
+    virtual void endCollect(EShLanguage stage) = 0;
+    // Called by TSlotCollector to resolve storage locations or bindings
+    virtual void reserverStorageSlot(TVarEntryInfo& ent, TInfoSink& infoSink) = 0;
+    // Called by TSlotCollector to resolve resource locations or bindings
+    virtual void reserverResourceSlot(TVarEntryInfo& ent, TInfoSink& infoSink) = 0;
+    // Called by mapIO.addStage to set shader stage mask to mark a stage be added to this pipeline
+    virtual void addStage(EShLanguage stage) = 0;
 };
+
+#endif // GLSLANG_WEB
 
 // Make one TProgram per set of shaders that will get linked together.  Add all
 // the shaders that are to be linked together.  After calling shader.parse()
@@ -733,14 +755,14 @@ public:
 
     TIntermediate* getIntermediate(EShLanguage stage) const { return intermediate[stage]; }
 
+#ifndef GLSLANG_WEB
+
     // Reflection Interface
 
     // call first, to do liveness analysis, index mapping, etc.; returns false on failure
-    bool buildReflection(int opts = EShReflectionDefault);    
-
+    bool buildReflection(int opts = EShReflectionDefault);
     unsigned getLocalSize(int dim) const;                  // return dim'th local size
     int getReflectionIndex(const char *name) const;
-
     int getNumUniformVariables() const;
     const TObjectReflection& getUniform(int index) const;
     int getNumUniformBlocks() const;
@@ -819,11 +841,11 @@ public:
     const TType *getAttributeTType(int index) const    { return getPipeInput(index).getType(); }
 
     void dumpReflection();
-
     // I/O mapping: apply base offsets and map live unbound variables
     // If resolver is not provided it uses the previous approach
     // and respects auto assignment and offsets.
-    bool mapIO(TIoMapResolver* resolver = NULL);
+    bool mapIO(TIoMapResolver* pResolver = nullptr, TIoMapper* pIoMapper = nullptr);
+#endif
 
 protected:
     bool linkStage(EShLanguage, EShMessages);
@@ -833,8 +855,9 @@ protected:
     TIntermediate* intermediate[EShLangCount];
     bool newedIntermediate[EShLangCount];      // track which intermediate were "new" versus reusing a singleton unit in a stage
     TInfoSink* infoSink;
+#ifndef GLSLANG_WEB
     TReflection* reflection;
-    TIoMapper* ioMapper;
+#endif
     bool linked;
 
 private:
