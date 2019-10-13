@@ -135,6 +135,8 @@ struct TSampler {   // misnomer now; includes images, textures without sampler, 
     bool isYuv()         const { return yuv; }
 #endif
     void setCombined(bool c) { combined = c; }
+    void setBasicType(TBasicType t) { type = t; }
+    TBasicType getBasicType()  const { return type; }
     bool isShadow()      const { return shadow; }
     bool isArrayed()     const { return arrayed; }
 
@@ -1195,6 +1197,7 @@ struct TShaderQualifiers {
     TVertexOrder order;
     bool pointMode;
     int localSize[3];         // compute shader
+    bool localSizeNotDefault[3];        // compute shader
     int localSizeSpecId[3];   // compute shader specialization id for gl_WorkGroupSize
 #ifndef GLSLANG_WEB
     bool earlyFragmentTests;  // fragment input
@@ -1225,6 +1228,9 @@ struct TShaderQualifiers {
         localSize[0] = 1;
         localSize[1] = 1;
         localSize[2] = 1;
+        localSizeNotDefault[0] = false;
+        localSizeNotDefault[1] = false;
+        localSizeNotDefault[2] = false;
         localSizeSpecId[0] = TQualifier::layoutNotSet;
         localSizeSpecId[1] = TQualifier::layoutNotSet;
         localSizeSpecId[2] = TQualifier::layoutNotSet;
@@ -1271,6 +1277,9 @@ struct TShaderQualifiers {
         for (int i = 0; i < 3; ++i) {
             if (src.localSize[i] > 1)
                 localSize[i] = src.localSize[i];
+        }
+        for (int i = 0; i < 3; ++i) {
+            localSizeNotDefault[i] = src.localSizeNotDefault[i] || localSizeNotDefault[i];
         }
         for (int i = 0; i < 3; ++i) {
             if (src.localSizeSpecId[i] != TQualifier::layoutNotSet)
@@ -1433,11 +1442,18 @@ public:
                                     }
                                     typeName = NewPoolTString(p.userDef->getTypeName().c_str());
                                 }
-                                if (p.isCoopmat() && p.basicType == EbtFloat &&
-                                    p.typeParameters && p.typeParameters->getNumDims() > 0 &&
-                                    p.typeParameters->getDimSize(0) == 16) {
-                                    basicType = EbtFloat16;
-                                    qualifier.precision = EpqNone;
+                                if (p.isCoopmat() && p.typeParameters && p.typeParameters->getNumDims() > 0) {
+                                    int numBits = p.typeParameters->getDimSize(0);
+                                    if (p.basicType == EbtFloat && numBits == 16) {
+                                        basicType = EbtFloat16;
+                                        qualifier.precision = EpqNone;
+                                    } else if (p.basicType == EbtUint && numBits == 8) {
+                                        basicType = EbtUint8;
+                                        qualifier.precision = EpqNone;
+                                    } else if (p.basicType == EbtInt && numBits == 8) {
+                                        basicType = EbtInt8;
+                                        qualifier.precision = EpqNone;
+                                    }
                                 }
                             }
     // for construction of sampler types
@@ -1654,6 +1670,8 @@ public:
     virtual bool isImage()   const { return basicType == EbtSampler && getSampler().isImage(); }
     virtual bool isSubpass() const { return basicType == EbtSampler && getSampler().isSubpass(); }
     virtual bool isTexture() const { return basicType == EbtSampler && getSampler().isTexture(); }
+    // Check the block-name convention of creating a block without populating it's members:
+    virtual bool isUnusableName() const { return isStruct() && structure == nullptr; }
     virtual bool isParameterized()  const { return typeParameters != nullptr; }
 #ifdef GLSLANG_WEB
     bool isAtomic() const { return false; }
@@ -2177,7 +2195,8 @@ public:
     const TTypeList* getStruct() const { assert(isStruct()); return structure; }
     void setStruct(TTypeList* s) { assert(isStruct()); structure = s; }
     TTypeList* getWritableStruct() const { assert(isStruct()); return structure; }  // This should only be used when known to not be sharing with other threads
-
+    void setBasicType(const TBasicType& t) { basicType = t; }
+    
     int computeNumComponents() const
     {
         int components = 0;
@@ -2301,9 +2320,23 @@ public:
     // an OK function parameter
     bool coopMatParameterOK(const TType& right) const
     {
-        return isCoopMat() && right.isCoopMat() &&
+        return isCoopMat() && right.isCoopMat() && (getBasicType() == right.getBasicType()) &&
                typeParameters == nullptr && right.typeParameters != nullptr;
     }
+
+    bool sameCoopMatBaseType(const TType &right) const {
+        bool rv = coopmat && right.coopmat;
+        if (getBasicType() == EbtFloat || getBasicType() == EbtFloat16)
+            rv = right.getBasicType() == EbtFloat || right.getBasicType() == EbtFloat16;
+        else if (getBasicType() == EbtUint || getBasicType() == EbtUint8)
+            rv = right.getBasicType() == EbtUint || right.getBasicType() == EbtUint8;
+        else if (getBasicType() == EbtInt || getBasicType() == EbtInt8)
+            rv = right.getBasicType() == EbtInt || right.getBasicType() == EbtInt8;
+        else
+            rv = false;
+        return rv;
+    }
+
 
     // See if two types match in all ways (just the actual type, not qualification)
     bool operator==(const TType& right) const

@@ -319,10 +319,15 @@ TIntermTyped* TParseContext::handleVariable(const TSourceLoc& loc, TSymbol* symb
         // If this is a variable or a block, check it and all it contains, but if this
         // is a member of an anonymous block, check the whole block, as the whole block
         // will need to be copied up if it contains an unsized array.
-        if (symbol->getType().containsUnsizedArray() ||
-            (symbol->getAsAnonMember() &&
-             symbol->getAsAnonMember()->getAnonContainer().getType().containsUnsizedArray()))
-            makeEditable(symbol);
+        //
+        // This check is being done before the block-name check further down, so guard
+        // for that too.
+        if (!symbol->getType().isUnusableName()) {
+            if (symbol->getType().containsUnsizedArray() ||
+                (symbol->getAsAnonMember() &&
+                 symbol->getAsAnonMember()->getAnonContainer().getType().containsUnsizedArray()))
+                makeEditable(symbol);
+        }
     }
 #endif
 
@@ -347,8 +352,7 @@ TIntermTyped* TParseContext::handleVariable(const TSourceLoc& loc, TSymbol* symb
         // See if it was a variable.
         variable = symbol ? symbol->getAsVariable() : nullptr;
         if (variable) {
-            if ((variable->getType().getBasicType() == EbtBlock ||
-                 variable->getType().getBasicType() == EbtStruct) && variable->getType().getStruct() == nullptr) {
+            if (variable->getType().isUnusableName()) {
                 error(loc, "cannot be used (maybe an instance name is needed)", string->c_str(), "");
                 variable = nullptr;
             }
@@ -1152,8 +1156,9 @@ TIntermTyped* TParseContext::handleFunctionCall(const TSourceLoc& loc, TFunction
                         if (lValueErrorCheck(arguments->getLoc(), "assign", arg->getAsTyped()))
                             error(arguments->getLoc(), "Non-L-value cannot be passed for 'out' or 'inout' parameters.", "out", "");
                     }
-                    TQualifier& argQualifier = arg->getAsTyped()->getQualifier();
-                    if (argQualifier.isMemory()) {
+                    const TType& argType = arg->getAsTyped()->getType();
+                    const TQualifier& argQualifier = argType.getQualifier();
+                    if (argQualifier.isMemory() && (argType.containsOpaque() || argType.isReference())) {
                         const char* message = "argument cannot drop memory qualifier when passed to formal parameter";
                         if (argQualifier.volatil && ! formalQualifier.volatil)
                             error(arguments->getLoc(), message, "volatile", "");
@@ -2150,9 +2155,11 @@ void TParseContext::builtInOpCheck(const TSourceLoc& loc, const TFunction& fnCan
         break;
 
     case EOpSubgroupBroadcast:
-        // <id> must be an integral constant expression.
-        if ((*argp)[1]->getAsConstantUnion() == nullptr)
-            error(loc, "argument must be compile-time constant", "id", "");
+        if (spvVersion.spv < EShTargetSpv_1_5) {
+            // <id> must be an integral constant expression.
+            if ((*argp)[1]->getAsConstantUnion() == nullptr)
+                error(loc, "argument must be compile-time constant", "id", "");
+        }
         break;
 
     case EOpBarrier:
@@ -2197,6 +2204,30 @@ void TParseContext::builtInOpCheck(const TSourceLoc& loc, const TFunction& fnCan
         // these require SPIR-V 1.3
         if (spvVersion.spv > 0 && spvVersion.spv < EShTargetSpv_1_3)
             error(loc, "requires SPIR-V 1.3", "subgroup op", "");
+
+        // Check that if extended types are being used that the correct extensions are enabled.
+        if (arg0 != nullptr) {
+            const TType& type = arg0->getType();
+            switch (type.getBasicType()) {
+            default:
+                break;
+            case EbtInt8:
+            case EbtUint8:
+                requireExtensions(loc, 1, &E_GL_EXT_shader_subgroup_extended_types_int8, type.getCompleteString().c_str());
+                break;
+            case EbtInt16:
+            case EbtUint16:
+                requireExtensions(loc, 1, &E_GL_EXT_shader_subgroup_extended_types_int16, type.getCompleteString().c_str());
+                break;
+            case EbtInt64:
+            case EbtUint64:
+                requireExtensions(loc, 1, &E_GL_EXT_shader_subgroup_extended_types_int64, type.getCompleteString().c_str());
+                break;
+            case EbtFloat16:
+                requireExtensions(loc, 1, &E_GL_EXT_shader_subgroup_extended_types_float16, type.getCompleteString().c_str());
+                break;
+            }
+        }
     }
 }
 
@@ -2743,10 +2774,25 @@ bool TParseContext::builtInName(const TString& identifier)
 //
 bool TParseContext::constructorError(const TSourceLoc& loc, TIntermNode* node, TFunction& function, TOperator op, TType& type)
 {
-    type.shallowCopy(function.getType());
+    // See if the constructor does not establish the main type, only requalifies
+    // it, in which case the type comes from the argument instead of from the
+    // constructor function.
+    switch (op) {
+    case EOpConstructNonuniform:
+        if (node != nullptr && node->getAsTyped() != nullptr) {
+            type.shallowCopy(node->getAsTyped()->getType());
+            type.getQualifier().makeTemporary();
+            type.getQualifier().nonUniform = true;
+        }
+        break;
+    default:
+        type.shallowCopy(function.getType());
+        break;
+    }
 
+    // See if it's a matrix
     bool constructingMatrix = false;
-    switch(op) {
+    switch (op) {
 #ifndef GLSLANG_WEB
     case EOpConstructTextureSampler:
         return constructorTextureSamplerError(loc, function);
@@ -2840,6 +2886,8 @@ bool TParseContext::constructorError(const TSourceLoc& loc, TIntermNode* node, T
             }
         }
     }
+    if (op == EOpConstructNonuniform)
+        constType = false;
 
 #ifndef GLSLANG_WEB
     switch (op) {
@@ -5101,7 +5149,8 @@ void TParseContext::setLayoutQualifier(const TSourceLoc& loc, TPublicType& publi
         return;
     } else if (id == "location") {
         profileRequires(loc, EEsProfile, 300, nullptr, "location");
-        const char* exts[2] = { E_GL_ARB_separate_shader_objects, E_GL_ARB_explicit_attrib_location };
+        const char* exts[2] = { E_GL_ARB_separate_shader_objects, E_GL_ARB_explicit_attrib_location }; 
+        // GL_ARB_explicit_uniform_location requires 330 or GL_ARB_explicit_attrib_location we do not need to add it here
         profileRequires(loc, ~EEsProfile, 330, 2, exts, "location");
         if ((unsigned int)value >= TQualifier::layoutLocationEnd)
             error(loc, "location is too large", id.c_str(), "");
@@ -5355,14 +5404,17 @@ void TParseContext::setLayoutQualifier(const TSourceLoc& loc, TPublicType& publi
             }
             if (id == "local_size_x") {
                 publicType.shaderQualifiers.localSize[0] = value;
+                publicType.shaderQualifiers.localSizeNotDefault[0] = true;
                 return;
             }
             if (id == "local_size_y") {
                 publicType.shaderQualifiers.localSize[1] = value;
+                publicType.shaderQualifiers.localSizeNotDefault[1] = true;
                 return;
             }
             if (id == "local_size_z") {
                 publicType.shaderQualifiers.localSize[2] = value;
+                publicType.shaderQualifiers.localSizeNotDefault[2] = true;
                 return;
             }
             if (spvVersion.spv != 0) {
@@ -5858,8 +5910,9 @@ void TParseContext::layoutQualifierCheck(const TSourceLoc& loc, const TQualifier
         case EvqBuffer:
         {
             const char* feature = "location qualifier on uniform or buffer";
-            requireProfile(loc, EEsProfile | ECoreProfile | ECompatibilityProfile, feature);
-            profileRequires(loc, ECoreProfile | ECompatibilityProfile, 430, nullptr, feature);
+            requireProfile(loc, EEsProfile | ECoreProfile | ECompatibilityProfile | ENoProfile, feature);
+            profileRequires(loc, ~EEsProfile, 330, E_GL_ARB_explicit_attrib_location, feature);
+            profileRequires(loc, ~EEsProfile, 430, E_GL_ARB_explicit_uniform_location, feature);
             profileRequires(loc, EEsProfile, 310, nullptr, feature);
             break;
         }
@@ -6192,6 +6245,8 @@ const TFunction* TParseContext::findFunction400(const TSourceLoc& loc, const TFu
         }
         if (from.isArray() || to.isArray() || ! from.sameElementShape(to))
             return false;
+        if (from.isCoopMat() && to.isCoopMat())
+            return from.sameCoopMatBaseType(to);
         return intermediate.canImplicitlyPromote(from.getBasicType(), to.getBasicType());
     };
 
@@ -6266,6 +6321,8 @@ const TFunction* TParseContext::findFunctionExplicitTypes(const TSourceLoc& loc,
         }
         if (from.isArray() || to.isArray() || ! from.sameElementShape(to))
             return false;
+        if (from.isCoopMat() && to.isCoopMat())
+            return from.sameCoopMatBaseType(to);
         return intermediate.canImplicitlyPromote(from.getBasicType(), to.getBasicType());
     };
 
@@ -6365,12 +6422,20 @@ TIntermNode* TParseContext::declareVariable(const TSourceLoc& loc, TString& iden
         if (!publicType.typeParameters || publicType.typeParameters->getNumDims() != 4) {
             error(loc, "expected four type parameters", identifier.c_str(), "");
         }
-        if (publicType.typeParameters &&
-            publicType.typeParameters->getDimSize(0) != 16 &&
-            publicType.typeParameters->getDimSize(0) != 32 &&
-            publicType.typeParameters->getDimSize(0) != 64) {
-            error(loc, "expected 16, 32, or 64 bits for first type parameter", identifier.c_str(), "");
+        if (publicType.typeParameters) {
+            if (isTypeFloat(publicType.basicType) &&
+                publicType.typeParameters->getDimSize(0) != 16 &&
+                publicType.typeParameters->getDimSize(0) != 32 &&
+                publicType.typeParameters->getDimSize(0) != 64) {
+                error(loc, "expected 16, 32, or 64 bits for first type parameter", identifier.c_str(), "");
+            }
+            if (isTypeInt(publicType.basicType) &&
+                publicType.typeParameters->getDimSize(0) != 8 &&
+                publicType.typeParameters->getDimSize(0) != 32) {
+                error(loc, "expected 8 or 32 bits for first type parameter", identifier.c_str(), "");
+            }
         }
+
     } else {
         if (publicType.typeParameters && publicType.typeParameters->getNumDims() != 0) {
             error(loc, "unexpected type parameters", identifier.c_str(), "");
@@ -6895,6 +6960,12 @@ TIntermTyped* TParseContext::constructBuiltIn(const TType& type, TOperator op, T
         break;
 
     case EOpConstructUVec2:
+        if (node->getType().getBasicType() == EbtReference) {
+            requireExtensions(loc, 1, &E_GL_EXT_buffer_reference_uvec2, "reference conversion to uvec2");
+            TIntermTyped* newNode = intermediate.addBuiltInFunctionCall(node->getLoc(), EOpConvPtrToUvec2, true, node,
+                type);
+            return newNode;
+        }
     case EOpConstructUVec3:
     case EOpConstructUVec4:
     case EOpConstructUint:
@@ -7041,8 +7112,7 @@ TIntermTyped* TParseContext::constructBuiltIn(const TType& type, TOperator op, T
 
     case EOpConstructNonuniform:
         // Make a nonuniform copy of node
-        newNode = intermediate.addBuiltInFunctionCall(node->getLoc(), EOpCopyObject, true, node, node->getType());
-        newNode->getWritableType().getQualifier().nonUniform = true;
+        newNode = intermediate.addBuiltInFunctionCall(node->getLoc(), EOpCopyObject, true, node, type);
         return newNode;
 
     case EOpConstructReference:
@@ -7052,7 +7122,15 @@ TIntermTyped* TParseContext::constructBuiltIn(const TType& type, TOperator op, T
             return newNode;
         // construct reference from uint64
         } else if (node->getType().isScalar() && node->getType().getBasicType() == EbtUint64) {
-            TIntermTyped* newNode = intermediate.addBuiltInFunctionCall(node->getLoc(), EOpConvUint64ToPtr, true, node, type);
+            TIntermTyped* newNode = intermediate.addBuiltInFunctionCall(node->getLoc(), EOpConvUint64ToPtr, true, node,
+                type);
+            return newNode;
+        // construct reference from uvec2
+        } else if (node->getType().isVector() && node->getType().getBasicType() == EbtUint &&
+                   node->getVectorSize() == 2) {
+            requireExtensions(loc, 1, &E_GL_EXT_buffer_reference_uvec2, "uvec2 conversion to reference");
+            TIntermTyped* newNode = intermediate.addBuiltInFunctionCall(node->getLoc(), EOpConvUvec2ToPtr, true, node,
+                type);
             return newNode;
         } else {
             return nullptr;
@@ -7065,19 +7143,75 @@ TIntermTyped* TParseContext::constructBuiltIn(const TType& type, TOperator op, T
             }
             node = intermediate.setAggregateOperator(node, EOpConstructCooperativeMatrix, type, node->getLoc());
         } else {
+            TOperator op = EOpNull;
             switch (type.getBasicType()) {
             default:
                 assert(0);
                 break;
+            case EbtInt:
+                switch (node->getType().getBasicType()) {
+                    case EbtFloat:   op = EOpConvFloatToInt;    break;
+                    case EbtFloat16: op = EOpConvFloat16ToInt;  break;
+                    case EbtUint8:   op = EOpConvUint8ToInt;    break;
+                    case EbtInt8:    op = EOpConvInt8ToInt;     break;
+                    case EbtUint:    op = EOpConvUintToInt;     break;
+                    default: assert(0);
+                }
+                break;
+            case EbtUint:
+                switch (node->getType().getBasicType()) {
+                    case EbtFloat:   op = EOpConvFloatToUint;    break;
+                    case EbtFloat16: op = EOpConvFloat16ToUint;  break;
+                    case EbtUint8:   op = EOpConvUint8ToUint;    break;
+                    case EbtInt8:    op = EOpConvInt8ToUint;     break;
+                    case EbtInt:     op = EOpConvIntToUint;      break;
+                    case EbtUint:    op = EOpConvUintToInt8;     break;
+                    default: assert(0);
+                }
+                break;
+            case EbtInt8:
+                switch (node->getType().getBasicType()) {
+                    case EbtFloat:   op = EOpConvFloatToInt8;    break;
+                    case EbtFloat16: op = EOpConvFloat16ToInt8;  break;
+                    case EbtUint8:   op = EOpConvUint8ToInt8;    break;
+                    case EbtInt:     op = EOpConvIntToInt8;      break;
+                    case EbtUint:    op = EOpConvUintToInt8;     break;
+                    default: assert(0);
+                }
+                break;
+            case EbtUint8:
+                switch (node->getType().getBasicType()) {
+                    case EbtFloat:   op = EOpConvFloatToUint8;   break;
+                    case EbtFloat16: op = EOpConvFloat16ToUint8; break;
+                    case EbtInt8:    op = EOpConvInt8ToUint8;    break;
+                    case EbtInt:     op = EOpConvIntToUint8;     break;
+                    case EbtUint:    op = EOpConvUintToUint8;    break;
+                    default: assert(0);
+                }
+                break;
             case EbtFloat:
-                assert(node->getType().getBasicType() == EbtFloat16);
-                node = intermediate.addUnaryNode(EOpConvFloat16ToFloat, node, node->getLoc(), type);
+                switch (node->getType().getBasicType()) {
+                    case EbtFloat16: op = EOpConvFloat16ToFloat;  break;
+                    case EbtInt8:    op = EOpConvInt8ToFloat;     break;
+                    case EbtUint8:   op = EOpConvUint8ToFloat;    break;
+                    case EbtInt:     op = EOpConvIntToFloat;      break;
+                    case EbtUint:    op = EOpConvUintToFloat;     break;
+                    default: assert(0);
+                }
                 break;
             case EbtFloat16:
-                assert(node->getType().getBasicType() == EbtFloat);
-                node = intermediate.addUnaryNode(EOpConvFloatToFloat16, node, node->getLoc(), type);
+                switch (node->getType().getBasicType()) {
+                    case EbtFloat:  op = EOpConvFloatToFloat16;  break;
+                    case EbtInt8:   op = EOpConvInt8ToFloat16;   break;
+                    case EbtUint8:  op = EOpConvUint8ToFloat16;  break;
+                    case EbtInt:    op = EOpConvIntToFloat16;    break;
+                    case EbtUint:   op = EOpConvUintToFloat16;   break;
+                    default: assert(0);
+                }
                 break;
             }
+
+            node = intermediate.addUnaryNode(op, node, node->getLoc(), type);
             // If it's a (non-specialization) constant, it must be folded.
             if (node->getAsUnaryNode()->getOperand()->getAsConstantUnion())
                 return node->getAsUnaryNode()->getOperand()->getAsConstantUnion()->fold(op, node->getType());
@@ -7872,7 +8006,7 @@ void TParseContext::updateStandaloneQualifierDefaults(const TSourceLoc& loc, con
             error(loc, "can only apply to 'in'", "point_mode", "");
     }
     for (int i = 0; i < 3; ++i) {
-        if (publicType.shaderQualifiers.localSize[i] > 1) {
+        if (publicType.shaderQualifiers.localSizeNotDefault[i]) {
             if (publicType.qualifier.storage == EvqVaryingIn) {
                 if (! intermediate.setLocalSize(i, publicType.shaderQualifiers.localSize[i]))
                     error(loc, "cannot change previously set size", "local_size", "");
