@@ -1,7 +1,7 @@
 //
 // Copyright (C) 2002-2005  3Dlabs Inc. Ltd.
 // Copyright (C) 2012-2015 LunarG, Inc.
-// Copyright (C) 2015-2018 Google, Inc.
+// Copyright (C) 2015-2020 Google, Inc.
 // Copyright (C) 2017 ARM Limited.
 //
 // All rights reserved.
@@ -538,7 +538,7 @@ bool TIntermediate::isConversionAllowed(TOperator op, TIntermTyped* node) const
         return false;
     case EbtAtomicUint:
     case EbtSampler:
-    case EbtAccStructNV:
+    case EbtAccStruct:
         // opaque types can be passed to functions
         if (op == EOpFunction)
             break;
@@ -801,10 +801,8 @@ TIntermTyped* TIntermediate::createConversion(TBasicType convertTo, TIntermTyped
     //
     // Add a new newNode for the conversion.
     //
-    TIntermUnary* newNode = nullptr;
 
-    TOperator newOp = EOpNull;
-
+#ifndef GLSLANG_WEB
     bool convertToIntTypes = (convertTo == EbtInt8  || convertTo == EbtUint8  ||
                               convertTo == EbtInt16 || convertTo == EbtUint16 ||
                               convertTo == EbtInt   || convertTo == EbtUint   ||
@@ -838,7 +836,10 @@ TIntermTyped* TIntermediate::createConversion(TBasicType convertTo, TIntermTyped
             (node->getBasicType() == EbtFloat16 && ! convertToFloatTypes))
             return nullptr;
     }
+#endif
 
+    TIntermUnary* newNode = nullptr;
+    TOperator newOp = EOpNull;
     if (!buildConvertOp(convertTo, node->getBasicType(), newOp)) {
         return nullptr;
     }
@@ -847,11 +848,14 @@ TIntermTyped* TIntermediate::createConversion(TBasicType convertTo, TIntermTyped
     newNode = addUnaryNode(newOp, node, node->getLoc(), newType);
 
     if (node->getAsConstantUnion()) {
+#ifndef GLSLANG_WEB
         // 8/16-bit storage extensions don't support 8/16-bit constants, so don't fold conversions
         // to those types
         if ((getArithemeticInt8Enabled() || !(convertTo == EbtInt8 || convertTo == EbtUint8)) &&
             (getArithemeticInt16Enabled() || !(convertTo == EbtInt16 || convertTo == EbtUint16)) &&
-            (getArithemeticFloat16Enabled() || !(convertTo == EbtFloat16))) {
+            (getArithemeticFloat16Enabled() || !(convertTo == EbtFloat16)))
+#endif
+        {
             TIntermTyped* folded = node->getAsConstantUnion()->fold(newOp, newType);
             if (folded)
                 return folded;
@@ -1125,6 +1129,7 @@ TIntermTyped* TIntermediate::addConversion(TOperator op, const TType& type, TInt
     case EOpLit:
     case EOpMax:
     case EOpMin:
+    case EOpMod:
     case EOpModf:
     case EOpPow:
     case EOpReflect:
@@ -1615,7 +1620,7 @@ bool TIntermediate::isFPIntegralConversion(TBasicType from, TBasicType to) const
 //
 bool TIntermediate::canImplicitlyPromote(TBasicType from, TBasicType to, TOperator op) const
 {
-    if (isEsProfile() || version == 110)
+    if ((isEsProfile() && version < 310 ) || version == 110)
         return false;
 
     if (from == to)
@@ -1662,7 +1667,7 @@ bool TIntermediate::canImplicitlyPromote(TBasicType from, TBasicType to, TOperat
                                 extensionRequested(E_GL_EXT_shader_explicit_arithmetic_types_float16) ||
                                 extensionRequested(E_GL_EXT_shader_explicit_arithmetic_types_float32) ||
                                 extensionRequested(E_GL_EXT_shader_explicit_arithmetic_types_float64);
-
+    
     if (explicitTypesEnabled) {
         // integral promotions
         if (isIntegralPromotion(from, to)) {
@@ -1694,6 +1699,30 @@ bool TIntermediate::canImplicitlyPromote(TBasicType from, TBasicType to, TOperat
             if (from == EbtBool && (to == EbtInt || to == EbtUint || to == EbtFloat))
                 return true;
         }
+    } else if (isEsProfile()) {
+        switch (to) {
+            case EbtFloat:
+                switch (from) {
+                case EbtInt:
+                case EbtUint:
+                    return extensionRequested(E_GL_EXT_shader_implicit_conversions);
+                case EbtFloat:
+                    return true;
+                default:
+                    return false;
+                }
+            case EbtUint:
+                switch (from) {
+                case EbtInt:
+                    return extensionRequested(E_GL_EXT_shader_implicit_conversions);
+                case EbtUint:
+                    return true;
+                default:
+                    return false;
+                }
+            default:
+                return false;
+        }        
     } else {
         switch (to) {
         case EbtDouble:
@@ -1726,15 +1755,14 @@ bool TIntermediate::canImplicitlyPromote(TBasicType from, TBasicType to, TOperat
                 return extensionRequested(E_GL_AMD_gpu_shader_int16);
             case EbtFloat16:
                 return 
-                    extensionRequested(E_GL_AMD_gpu_shader_half_float) ||
-                    getSource() == EShSourceHlsl;
+                    extensionRequested(E_GL_AMD_gpu_shader_half_float) || getSource() == EShSourceHlsl;
             default:
                  return false;
             }
         case EbtUint:
             switch (from) {
             case EbtInt:
-                 return version >= 400 || getSource() == EShSourceHlsl;
+                return version >= 400 || getSource() == EShSourceHlsl;
             case EbtUint:
                 return true;
             case EbtBool:
@@ -1926,7 +1954,9 @@ std::tuple<TBasicType, TBasicType> TIntermediate::getConversionDestinatonType(TB
     TBasicType res0 = EbtNumTypes;
     TBasicType res1 = EbtNumTypes;
 
-    if (isEsProfile() || version == 110)
+    if ((isEsProfile() && 
+        (version < 310 || !extensionRequested(E_GL_EXT_shader_implicit_conversions))) || 
+        version == 110)
         return std::make_tuple(res0, res1);
 
     if (getSource() == EShSourceHlsl) {
@@ -2769,6 +2799,9 @@ bool TIntermediate::postProcess(TIntermNode* root, EShLanguage /*language*/)
     case EShTexSampTransUpgradeTextureRemoveSampler:
         performTextureUpgradeAndSamplerRemovalTransformation(root);
         break;
+    case EShTexSampTransCount:
+        assert(0);
+        break;
     }
 #endif
 
@@ -3229,10 +3262,17 @@ bool TIntermediate::promoteUnary(TIntermUnary& node)
 
             return false;
         break;
-
     default:
-        if (operand->getBasicType() != EbtFloat)
+        // HLSL uses this path for initial function signature finding for built-ins
+        // taking a single argument, which generally don't participate in
+        // operator-based type promotion (type conversion will occur later).
+        // For now, scalar argument cases are relying on the setType() call below.
+        if (getSource() == EShSourceHlsl)
+            break;
 
+        // GLSL only allows integer arguments for the cases identified above in the
+        // case statements.
+        if (operand->getBasicType() != EbtFloat)
             return false;
     }
 
