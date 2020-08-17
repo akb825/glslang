@@ -401,9 +401,6 @@ struct Version {
     const char* flavor;
 };
 
-GLSLANG_EXPORT Version GetVersion();
-GLSLANG_EXPORT const char* GetEsslVersionString();
-GLSLANG_EXPORT const char* GetGlslVersionString();
 GLSLANG_EXPORT int GetKhronosToolId();
 
 class TIntermediate;
