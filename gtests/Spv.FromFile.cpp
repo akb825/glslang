@@ -1,6 +1,7 @@
  //
 // Copyright (C) 2016 Google, Inc.
 // Copyright (C) 2019 ARM Limited.
+// Modifications Copyright (C) 2020 Advanced Micro Devices, Inc. All rights reserved.
 //
 // All rights reserved.
 //
@@ -238,6 +239,7 @@ INSTANTIATE_TEST_SUITE_P(
         "rayQuery-committed.Error.rgen",
         "rayQuery-allOps.comp",
         "rayQuery-allOps.frag",
+        "rayQuery-initialization.Error.comp",
         "spv.set.vert",
         "spv.double.comp",
         "spv.100ops.frag",
@@ -350,6 +352,7 @@ INSTANTIATE_TEST_SUITE_P(
         "spv.int64.frag",
         "spv.intcoopmat.comp",
         "spv.intOps.vert",
+        "spv.layer.tese",
         "spv.layoutNested.vert",
         "spv.length.frag",
         "spv.localAggregates.frag",
@@ -374,6 +377,7 @@ INSTANTIATE_TEST_SUITE_P(
         "spv.offsets.frag",
         "spv.Operations.frag",
         "spv.paramMemory.frag",
+        "spv.paramMemory.420.frag",
         "spv.precision.frag",
         "spv.precisionArgs.frag",
         "spv.precisionNonESSamp.frag",
@@ -408,6 +412,7 @@ INSTANTIATE_TEST_SUITE_P(
         "spv.texture.vert",
         "spv.textureBuffer.vert",
         "spv.image.frag",
+        "spv.imageAtomic64.frag",
         "spv.types.frag",
         "spv.uint.frag",
         "spv.uniformArray.frag",
@@ -432,8 +437,10 @@ INSTANTIATE_TEST_SUITE_P(
         "spv.specConstant.int16.comp",
         "spv.specConstant.int8.comp",
         "spv.storageBuffer.vert",
+        "spv.terminate.frag",
         "spv.precise.tese",
         "spv.precise.tesc",
+        "spv.viewportindex.tese",
         "spv.volatileAtomic.comp",
         "spv.vulkan100.subgroupArithmetic.comp",
         "spv.vulkan100.subgroupPartitioned.comp",
@@ -443,6 +450,8 @@ INSTANTIATE_TEST_SUITE_P(
         "spv.samplerlessTextureFunctions.frag",
         "spv.smBuiltins.vert",
         "spv.smBuiltins.frag",
+        "spv.builtin.PrimitiveShadingRateEXT.vert",
+        "spv.builtin.ShadingRateEXT.frag",
     })),
     FileNameAsCustomTestSuffix
 );
