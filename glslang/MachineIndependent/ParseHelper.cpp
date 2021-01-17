@@ -2076,13 +2076,31 @@ void TParseContext::builtInOpCheck(const TSourceLoc& loc, const TFunction& fnCan
     }
 
 #ifndef GLSLANG_WEB
-    case EOpTrace:
+    case EOpTraceNV:
         if (!(*argp)[10]->getAsConstantUnion())
-            error(loc, "argument must be compile-time constant", "payload number", "");
+            error(loc, "argument must be compile-time constant", "payload number", "a");
         break;
-    case EOpExecuteCallable:
+    case EOpTraceKHR:
+        if (!(*argp)[10]->getAsConstantUnion())
+            error(loc, "argument must be compile-time constant", "payload number", "a");
+        else {
+            unsigned int location = (*argp)[10]->getAsConstantUnion()->getAsConstantUnion()->getConstArray()[0].getUConst();
+            if (intermediate.checkLocationRT(0, location) < 0)
+                error(loc, "with layout(location =", "no rayPayloadEXT/rayPayloadInEXT declared", "%d)", location);
+        }
+        break;
+    case EOpExecuteCallableNV:
         if (!(*argp)[1]->getAsConstantUnion())
             error(loc, "argument must be compile-time constant", "callable data number", "");
+        break;
+    case EOpExecuteCallableKHR:
+        if (!(*argp)[1]->getAsConstantUnion())
+            error(loc, "argument must be compile-time constant", "callable data number", "");
+        else {
+            unsigned int location = (*argp)[1]->getAsConstantUnion()->getAsConstantUnion()->getConstArray()[0].getUConst();
+            if (intermediate.checkLocationRT(1, location) < 0)
+                error(loc, "with layout(location =", "no callableDataEXT/callableDataInEXT declared", "%d)", location);
+        }
         break;
 
     case EOpRayQueryGetIntersectionType:
@@ -3440,7 +3458,7 @@ void TParseContext::globalQualifierTypeCheck(const TSourceLoc& loc, const TQuali
     if (! symbolTable.atGlobalLevel())
         return;
 
-    if (!(publicType.userDef && publicType.userDef->isReference())) {
+    if (!(publicType.userDef && publicType.userDef->isReference()) && !parsingBuiltins) {
         if (qualifier.isMemoryQualifierImageAndSSBOOnly() && ! publicType.isImage() && publicType.qualifier.storage != EvqBuffer) {
             error(loc, "memory qualifiers cannot be used on this type", "", "");
         } else if (qualifier.isMemory() && (publicType.basicType != EbtSampler) && !publicType.qualifier.isUniformOrBuffer()) {
@@ -5447,7 +5465,14 @@ void TParseContext::setLayoutQualifier(const TSourceLoc& loc, TPublicType& publi
         if (! IsPow2(value))
             error(loc, "must be a power of 2", "buffer_reference_align", "");
         else
+#ifdef __ANDROID__
+            // Android NDK r15c tageting ABI 15 doesn't have full support for C++11
+            // (no std::exp2/log2). ::exp2 is available from C99 but ::log2 isn't
+            // available up until ABI 18 so we use the mathematical equivalent form
+            publicType.qualifier.layoutBufferReferenceAlign = (unsigned int)(std::log(value) / std::log(2.0));
+#else
             publicType.qualifier.layoutBufferReferenceAlign = (unsigned int)std::log2(value);
+#endif
         if (nonLiteral)
             error(loc, "needs a literal integer", "buffer_reference_align", "");
         return;
@@ -7460,6 +7485,19 @@ TIntermTyped* TParseContext::constructBuiltIn(const TType& type, TOperator op, T
 
         return node;
 
+    case EOpConstructAccStruct:
+        if ((node->getType().isScalar() && node->getType().getBasicType() == EbtUint64)) {
+            // construct acceleration structure from uint64
+            requireExtensions(loc, 1, &E_GL_EXT_ray_tracing, "uint64_t conversion to acclerationStructureEXT");
+            return intermediate.addBuiltInFunctionCall(node->getLoc(), EOpConvUint64ToAccStruct, true, node,
+                type);
+        } else if (node->getType().isVector() && node->getType().getBasicType() == EbtUint && node->getVectorSize() == 2) {
+            // construct acceleration structure from uint64
+            requireExtensions(loc, 1, &E_GL_EXT_ray_tracing, "uvec2 conversion to accelerationStructureEXT");
+            return intermediate.addBuiltInFunctionCall(node->getLoc(), EOpConvUvec2ToAccStruct, true, node,
+                type);
+        } else
+            return nullptr;
 #endif // GLSLANG_WEB
 
     default:
