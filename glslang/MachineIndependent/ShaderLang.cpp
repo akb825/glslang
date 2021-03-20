@@ -1973,11 +1973,6 @@ bool TProgram::link(EShMessages messages)
             error = true;
     }
 
-    if (!error) {
-        if (! crossStageCheck(messages))
-            error = true;
-    }
-
     return ! error;
 }
 
