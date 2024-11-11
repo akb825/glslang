@@ -508,7 +508,10 @@ function_call_header_with_parameters
             && $3->getType().containsOpaque())
         {
             TIntermNode* remappedNode = parseContext.vkRelaxedRemapFunctionArgument($2.loc, $1.function, $3);
-            $$.intermNode = parseContext.intermediate.mergeAggregate($1.intermNode, remappedNode, $2.loc);
+            if (remappedNode == $3)
+                $$.intermNode = parseContext.intermediate.growAggregate($1.intermNode, $3, $2.loc);
+            else
+                $$.intermNode = parseContext.intermediate.mergeAggregate($1.intermNode, remappedNode, $2.loc);
             $$.function = $1.function;
         }
         else
@@ -1756,6 +1759,7 @@ type_parameter_specifier_list
     : type_specifier {
         $$ = new TTypeParameters;
         $$->arraySizes = new TArraySizes;
+        $$->spirvType = $1.spirvType;
         $$->basicType = $1.basicType;
     }
     | unary_expression {
@@ -3769,8 +3773,10 @@ compound_statement
         --parseContext.statementNestingLevel;
     }
       RIGHT_BRACE {
-        if ($3 && $3->getAsAggregate())
+        if ($3 && $3->getAsAggregate()) {
             $3->getAsAggregate()->setOperator(parseContext.intermediate.getDebugInfo() ? EOpScope : EOpSequence);
+            $3->getAsAggregate()->setEndLoc($5.loc);
+        }
         $$ = $3;
     }
     ;
@@ -3806,8 +3812,10 @@ compound_statement_no_new_scope
         $$ = 0;
     }
     | LEFT_BRACE statement_list RIGHT_BRACE {
-        if ($2 && $2->getAsAggregate())
+        if ($2 && $2->getAsAggregate()) {
             $2->getAsAggregate()->setOperator(EOpSequence);
+            $2->getAsAggregate()->setEndLoc($3.loc);
+        }
         $$ = $2;
     }
     ;
