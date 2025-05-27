@@ -268,6 +268,9 @@ Id Builder::makeFloatType(int width)
     Instruction* type;
     for (int t = 0; t < (int)groupedTypes[OpTypeFloat].size(); ++t) {
         type = groupedTypes[OpTypeFloat][t];
+        if (type->getNumOperands() != 1) {
+            continue;
+        }
         if (type->getImmediateOperand(0) == (unsigned)width)
             return type->getResultId();
     }
@@ -296,6 +299,43 @@ Id Builder::makeFloatType(int width)
         auto const debugResultId = makeFloatDebugType(width);
         debugId[type->getResultId()] = debugResultId;
     }
+
+    return type->getResultId();
+}
+
+Id Builder::makeBFloat16Type()
+{
+    // try to find it
+    Instruction* type;
+    for (int t = 0; t < (int)groupedTypes[OpTypeFloat].size(); ++t) {
+        type = groupedTypes[OpTypeFloat][t];
+        if (type->getNumOperands() != 2) {
+            continue;
+        }
+        if (type->getImmediateOperand(0) == (unsigned)16 &&
+            type->getImmediateOperand(1) == FPEncodingBFloat16KHR)
+            return type->getResultId();
+    }
+
+    // not found, make it
+    type = new Instruction(getUniqueId(), NoType, OpTypeFloat);
+    type->addImmediateOperand(16);
+    type->addImmediateOperand(FPEncodingBFloat16KHR);
+    groupedTypes[OpTypeFloat].push_back(type);
+    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(type));
+    module.mapInstruction(type);
+
+    addExtension(spv::E_SPV_KHR_bfloat16);
+    addCapability(CapabilityBFloat16TypeKHR);
+
+#if 0
+    // XXX not supported
+    if (emitNonSemanticShaderDebugInfo)
+    {
+        auto const debugResultId = makeFloatDebugType(width);
+        debugId[type->getResultId()] = debugResultId;
+    }
+#endif
 
     return type->getResultId();
 }
@@ -515,6 +555,28 @@ Id Builder::makeCooperativeMatrixTypeWithSameShape(Id component, Id otherType)
     }
 }
 
+Id Builder::makeCooperativeVectorTypeNV(Id componentType, Id components)
+{
+    // try to find it
+    Instruction* type;
+    for (int t = 0; t < (int)groupedTypes[OpTypeCooperativeVectorNV].size(); ++t) {
+        type = groupedTypes[OpTypeCooperativeVectorNV][t];
+        if (type->getIdOperand(0) == componentType &&
+            type->getIdOperand(1) == components)
+            return type->getResultId();
+    }
+
+    // not found, make it
+    type = new Instruction(getUniqueId(), NoType, OpTypeCooperativeVectorNV);
+    type->addIdOperand(componentType);
+    type->addIdOperand(components);
+    groupedTypes[OpTypeCooperativeVectorNV].push_back(type);
+    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(type));
+    module.mapInstruction(type);
+
+    return type->getResultId();
+}
+
 Id Builder::makeGenericType(spv::Op opcode, std::vector<spv::IdImmediate>& operands)
 {
     // try to find it
@@ -560,7 +622,8 @@ Id Builder::makeArrayType(Id element, Id sizeId, int stride)
         for (int t = 0; t < (int)groupedTypes[OpTypeArray].size(); ++t) {
             type = groupedTypes[OpTypeArray][t];
             if (type->getIdOperand(0) == element &&
-                type->getIdOperand(1) == sizeId)
+                type->getIdOperand(1) == sizeId &&
+                explicitlyLaidOut.find(type->getResultId()) == explicitlyLaidOut.end())
                 return type->getResultId();
         }
     }
@@ -573,6 +636,10 @@ Id Builder::makeArrayType(Id element, Id sizeId, int stride)
     groupedTypes[OpTypeArray].push_back(type);
     constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(type));
     module.mapInstruction(type);
+
+    if (stride != 0) {
+        explicitlyLaidOut.insert(type->getResultId());
+    }
 
     if (emitNonSemanticShaderDebugInfo)
     {
@@ -1127,24 +1194,49 @@ Id Builder::makeDebugSource(const Id fileName) {
     sourceInst->addIdOperand(nonSemanticShaderDebugInfo);
     sourceInst->addImmediateOperand(NonSemanticShaderDebugInfo100DebugSource);
     sourceInst->addIdOperand(fileName);
+    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(sourceInst));
+    module.mapInstruction(sourceInst);
     if (emitNonSemanticShaderDebugSource) {
-        spv::Id sourceId = 0;
+        const int maxWordCount = 0xFFFF;
+        const int opSourceWordCount = 4;
+        const int nonNullBytesPerInstruction = 4 * (maxWordCount - opSourceWordCount) - 1;
+        auto processDebugSource = [&](std::string source) {
+            if (source.size() > 0) {
+                int nextByte = 0;
+                while ((int)source.size() - nextByte > 0) {
+                    auto subString = source.substr(nextByte, nonNullBytesPerInstruction);
+                    auto sourceId = getStringId(subString);
+                    if (nextByte == 0) {
+                        // DebugSource
+                        sourceInst->addIdOperand(sourceId);
+                    } else {
+                        // DebugSourceContinued
+                        Instruction* sourceContinuedInst = new Instruction(getUniqueId(), makeVoidType(), OpExtInst);
+                        sourceContinuedInst->reserveOperands(2);
+                        sourceContinuedInst->addIdOperand(nonSemanticShaderDebugInfo);
+                        sourceContinuedInst->addImmediateOperand(NonSemanticShaderDebugInfo100DebugSourceContinued);
+                        sourceContinuedInst->addIdOperand(sourceId);
+                        constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(sourceContinuedInst));
+                        module.mapInstruction(sourceContinuedInst);
+                    }
+                    nextByte += nonNullBytesPerInstruction;
+                }
+            } else {
+                auto sourceId = getStringId(source);
+                sourceInst->addIdOperand(sourceId);
+            }
+        };
         if (fileName == mainFileId) {
-            sourceId = getStringId(sourceText);
+            processDebugSource(sourceText);
         } else {
             auto incItr = includeFiles.find(fileName);
             if (incItr != includeFiles.end()) {
-                sourceId = getStringId(*incItr->second);
+                processDebugSource(*incItr->second);
+            } else {
+                // We omit the optional source text item if not available in glslang
             }
         }
-
-        // We omit the optional source text item if not available in glslang
-        if (sourceId != 0) {
-            sourceInst->addIdOperand(sourceId);
-        }
     }
-    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(sourceInst));
-    module.mapInstruction(sourceInst);
     debugSourceId[fileName] = resultId;
     return resultId;
 }
@@ -1363,6 +1455,7 @@ unsigned int Builder::getNumTypeConstituents(Id typeId) const
     case OpTypeVector:
     case OpTypeMatrix:
         return instr->getImmediateOperand(1);
+    case OpTypeCooperativeVectorNV:
     case OpTypeArray:
     {
         Id lengthId = instr->getIdOperand(1);
@@ -1401,6 +1494,7 @@ Id Builder::getScalarTypeId(Id typeId) const
     case OpTypeArray:
     case OpTypeRuntimeArray:
     case OpTypePointer:
+    case OpTypeCooperativeVectorNV:
         return getScalarTypeId(getContainedTypeId(typeId));
     default:
         assert(0);
@@ -1422,6 +1516,7 @@ Id Builder::getContainedTypeId(Id typeId, int member) const
     case OpTypeRuntimeArray:
     case OpTypeCooperativeMatrixKHR:
     case OpTypeCooperativeMatrixNV:
+    case OpTypeCooperativeVectorNV:
         return instr->getIdOperand(0);
     case OpTypePointer:
         return instr->getIdOperand(1);
@@ -1770,6 +1865,37 @@ Id Builder::makeFloat16Constant(float f16, bool specConstant)
     return c->getResultId();
 }
 
+Id Builder::makeBFloat16Constant(float bf16, bool specConstant)
+{
+    Op opcode = specConstant ? OpSpecConstant : OpConstant;
+    Id typeId = makeBFloat16Type();
+
+    union {
+        float f;
+        uint32_t u;
+    } un;
+    un.f = bf16;
+
+    // take high 16b of fp32 value. This is effectively round-to-zero, other than certain NaNs.
+    unsigned value = un.u >> 16;
+
+    // See if we already made it. Applies only to regular constants, because specialization constants
+    // must remain distinct for the purpose of applying a SpecId decoration.
+    if (!specConstant) {
+        Id existing = findScalarConstant(OpTypeFloat, opcode, typeId, value);
+        if (existing)
+            return existing;
+    }
+
+    Instruction* c = new Instruction(getUniqueId(), typeId, opcode);
+    c->addImmediateOperand(value);
+    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(c));
+    groupedConstants[OpTypeFloat].push_back(c);
+    module.mapInstruction(c);
+
+    return c->getResultId();
+}
+
 Id Builder::makeFpConstant(Id type, double d, bool specConstant)
 {
     const int width = getScalarTypeWidth(type);
@@ -1804,7 +1930,7 @@ Id Builder::importNonSemanticShaderDebugInfoInstructions()
     return nonSemanticShaderDebugInfo;
 }
 
-Id Builder::findCompositeConstant(Op typeClass, Id typeId, const std::vector<Id>& comps)
+Id Builder::findCompositeConstant(Op typeClass, Op opcode, Id typeId, const std::vector<Id>& comps, size_t numMembers)
 {
     Instruction* constant = nullptr;
     bool found = false;
@@ -1812,6 +1938,13 @@ Id Builder::findCompositeConstant(Op typeClass, Id typeId, const std::vector<Id>
         constant = groupedConstants[typeClass][i];
 
         if (constant->getTypeId() != typeId)
+            continue;
+
+        if (constant->getOpCode() != opcode) {
+            continue;
+        }
+
+        if (constant->getNumOperands() != (int)numMembers)
             continue;
 
         // same contents?
@@ -1863,7 +1996,7 @@ Id Builder::makeCompositeConstant(Id typeId, const std::vector<Id>& members, boo
 
     bool replicate = false;
     size_t numMembers = members.size();
-    if (useReplicatedComposites) {
+    if (useReplicatedComposites || typeClass == OpTypeCooperativeVectorNV) {
         // use replicate if all members are the same
         replicate = numMembers > 0 &&
             std::equal(members.begin() + 1, members.end(), members.begin());
@@ -1885,8 +2018,9 @@ Id Builder::makeCompositeConstant(Id typeId, const std::vector<Id>& members, boo
     case OpTypeMatrix:
     case OpTypeCooperativeMatrixKHR:
     case OpTypeCooperativeMatrixNV:
+    case OpTypeCooperativeVectorNV:
         if (! specConstant) {
-            Id existing = findCompositeConstant(typeClass, typeId, members);
+            Id existing = findCompositeConstant(typeClass, opcode, typeId, members, numMembers);
             if (existing)
                 return existing;
         }
@@ -3021,7 +3155,7 @@ Id Builder::smearScalar(Decoration precision, Id scalar, Id vectorType)
     assert(getTypeId(scalar) == getScalarTypeId(vectorType));
 
     int numComponents = getNumTypeComponents(vectorType);
-    if (numComponents == 1)
+    if (numComponents == 1 && !isCooperativeVectorType(vectorType))
         return scalar;
 
     Instruction* smear = nullptr;
@@ -3038,7 +3172,7 @@ Id Builder::smearScalar(Decoration precision, Id scalar, Id vectorType)
         auto result_id = makeCompositeConstant(vectorType, members, isSpecConstant(scalar));
         smear = module.getInstruction(result_id);
     } else {
-        bool replicate = useReplicatedComposites && (numComponents > 0);
+        bool replicate = (useReplicatedComposites || isCooperativeVectorType(vectorType)) && (numComponents > 0);
 
         if (replicate) {
             numComponents = 1;
@@ -3151,6 +3285,9 @@ Id Builder::createTextureCall(Decoration precision, Id resultType, bool sparse, 
     }
     if (parameters.volatil) {
         mask = mask | ImageOperandsVolatileTexelKHRMask;
+    }
+    if (parameters.nontemporal) {
+        mask = mask | ImageOperandsNontemporalMask;
     }
     mask = mask | signExtensionMask;
     // insert the operand for the mask, if any bits were set.
@@ -3425,7 +3562,8 @@ Id Builder::createCompositeCompare(Decoration precision, Id value1, Id value2, b
 Id Builder::createCompositeConstruct(Id typeId, const std::vector<Id>& constituents)
 {
     assert(isAggregateType(typeId) || (getNumTypeConstituents(typeId) > 1 &&
-           getNumTypeConstituents(typeId) == constituents.size()));
+           getNumTypeConstituents(typeId) == constituents.size()) ||
+           (isCooperativeVectorType(typeId) && constituents.size() == 1));
 
     if (generatingOpCodeForSpecConst) {
         // Sometime, even in spec-constant-op mode, the constant composite to be
@@ -3444,7 +3582,7 @@ Id Builder::createCompositeConstruct(Id typeId, const std::vector<Id>& constitue
     bool replicate = false;
     size_t numConstituents = constituents.size();
 
-    if (useReplicatedComposites) {
+    if (useReplicatedComposites || isCooperativeVectorType(typeId)) {
         replicate = numConstituents > 0 &&
             std::equal(constituents.begin() + 1, constituents.end(), constituents.begin());
     }
@@ -3510,7 +3648,7 @@ Id Builder::createConstructor(Decoration precision, const std::vector<Id>& sourc
 
     // Special case: when calling a vector constructor with a single scalar
     // argument, smear the scalar
-    if (sources.size() == 1 && isScalar(sources[0]) && numTargetComponents > 1)
+    if (sources.size() == 1 && isScalar(sources[0]) && (numTargetComponents > 1 || isCooperativeVectorType(resultTypeId)))
         return smearScalar(precision, sources[0], resultTypeId);
 
     // Special case: 2 vectors of equal size
@@ -3574,7 +3712,7 @@ Id Builder::createConstructor(Decoration precision, const std::vector<Id>& sourc
 
         if (isScalar(sources[i]) || isPointer(sources[i]))
             latchResult(sources[i]);
-        else if (isVector(sources[i]))
+        else if (isVector(sources[i]) || isCooperativeVector(sources[i]))
             accumulateVectorConstituents(sources[i]);
         else if (isMatrix(sources[i]))
             accumulateMatrixConstituents(sources[i]);
@@ -4021,6 +4159,9 @@ Id Builder::accessChainLoad(Decoration precision, Decoration l_nonUniform,
             if (constant) {
                 id = createCompositeExtract(accessChain.base, swizzleBase, indexes);
                 setPrecision(id, precision);
+            } else if (isCooperativeVector(accessChain.base)) {
+                assert(accessChain.indexChain.size() == 1);
+                id = createVectorExtractDynamic(accessChain.base, resultType, accessChain.indexChain[0]);
             } else {
                 Id lValue = NoResult;
                 if (spvVersion >= Spv_1_4 && isValidInitializer(accessChain.base)) {

@@ -408,6 +408,7 @@ const std::unordered_map<const char*, int, str_hash, str_eq> KeywordMap {
     {"writeonly",WRITEONLY},
     {"atomic_uint",ATOMIC_UINT},
     {"volatile",VOLATILE},
+    {"nontemporal",NONTEMPORAL},
     {"patch",PATCH},
     {"sample",SAMPLE},
     {"subroutine",SUBROUTINE},
@@ -535,6 +536,11 @@ const std::unordered_map<const char*, int, str_hash, str_eq> KeywordMap {
     {"f16mat4x2",F16MAT4X2},
     {"f16mat4x3",F16MAT4X3},
     {"f16mat4x4",F16MAT4X4},
+
+    {"bfloat16_t",BFLOAT16_T},
+    {"bf16vec2",BF16VEC2},
+    {"bf16vec3",BF16VEC3},
+    {"bf16vec4",BF16VEC4},
 
     {"float32_t",FLOAT32_T},
     {"f32vec2",F32VEC2},
@@ -756,6 +762,8 @@ const std::unordered_map<const char*, int, str_hash, str_eq> KeywordMap {
     {"__function",FUNCTION},
     {"tensorLayoutNV",TENSORLAYOUTNV},
     {"tensorViewNV",TENSORVIEWNV},
+
+    {"coopvecNV",COOPVECNV},
 };
 const std::unordered_set<const char*, str_hash, str_eq> ReservedSet {
     "common",
@@ -1104,6 +1112,15 @@ int TScanContext::tokenizeIdentifier()
             (parseContext.version < 420 && ! parseContext.extensionTurnedOn(E_GL_ARB_shader_image_load_store))))
             reservedWord();
         return keyword;
+    case NONTEMPORAL:
+        if (parseContext.symbolTable.atBuiltInLevel())
+            return keyword;
+        if (parseContext.extensionTurnedOn(E_GL_EXT_nontemporal_keyword)) {
+            if (!parseContext.intermediate.usingVulkanMemoryModel())
+                parseContext.warn(loc, "Nontemporal without the Vulkan Memory Model is ignored", tokenText, "");
+            return keyword;
+        }
+        return identifierOrType();
     case PATCH:
         if (parseContext.symbolTable.atBuiltInLevel() ||
             (parseContext.isEsProfile() &&
@@ -1442,6 +1459,17 @@ int TScanContext::tokenizeIdentifier()
 
         return identifierOrType();
 
+    case BFLOAT16_T:
+    case BF16VEC2:
+    case BF16VEC3:
+    case BF16VEC4:
+        afterType = true;
+        if (parseContext.symbolTable.atBuiltInLevel() ||
+            parseContext.extensionTurnedOn(E_GL_EXT_bfloat16))
+            return keyword;
+
+        return identifierOrType();
+
     case SAMPLERCUBEARRAY:
     case SAMPLERCUBEARRAYSHADOW:
     case ISAMPLERCUBEARRAY:
@@ -1773,6 +1801,13 @@ int TScanContext::tokenizeIdentifier()
         afterType = true;
         if (parseContext.symbolTable.atBuiltInLevel() ||
             parseContext.extensionTurnedOn(E_GL_KHR_cooperative_matrix))
+            return keyword;
+        return identifierOrType();
+
+    case COOPVECNV:
+        afterType = true;
+        if (parseContext.symbolTable.atBuiltInLevel() ||
+            parseContext.extensionTurnedOn(E_GL_NV_cooperative_vector))
             return keyword;
         return identifierOrType();
 
