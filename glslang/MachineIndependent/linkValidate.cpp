@@ -451,7 +451,7 @@ void TIntermediate::optimizeStageIO(TInfoSink&, TIntermediate& unit)
 
         // determine if the input/output pair should be demoted
         // do the faster (and more likely) loose-loose check first
-        if (std::none_of(unitLiveInputs.begin(), unitLiveInputs.end(), isMatchingInput) && 
+        if (std::none_of(unitLiveInputs.begin(), unitLiveInputs.end(), isMatchingInput) &&
             std::none_of(unitAllInputs.begin(), unitAllInputs.end(), isMatchingInputBlockMember)) {
             // demote any input matching the output
             auto demoteMatchingInputs = [output](TIntermNode* input) {
@@ -1094,7 +1094,9 @@ void TIntermediate::mergeLinkerObjects(TInfoSink& infoSink, TIntermSequence& lin
                 mergeImplicitArraySizes(symbol->getWritableType(), unitSymbol->getType());
 
                 // Check for consistent types/qualification/initializers etc.
+#if 0 // Disable with MSL due to custom linker behavior.
                 mergeErrorCheck(infoSink, *symbol, *unitSymbol);
+#endif
             }
             // If different symbols, verify they arn't push_constant since there can only be one per stage
             else if (symbol->getQualifier().isPushConstant() && unitSymbol->getQualifier().isPushConstant() && getStage() == unitStage)
@@ -1116,6 +1118,7 @@ void TIntermediate::mergeLinkerObjects(TInfoSink& infoSink, TIntermSequence& lin
         if (merge) {
             linkerObjects.push_back(unitLinkerObjects[unitLinkObj]);
 
+#if 0 // Disable with MSL due to custom linker behavior.
             // for anonymous blocks, check that their members don't conflict with other names
             if (unitLinkerObjects[unitLinkObj]->getAsSymbolNode()->getBasicType() == EbtBlock &&
                 IsAnonymous(unitLinkerObjects[unitLinkObj]->getAsSymbolNode()->getName())) {
@@ -1148,6 +1151,7 @@ void TIntermediate::mergeLinkerObjects(TInfoSink& infoSink, TIntermSequence& lin
                     }
                 }
             }
+#endif
         }
     }
 }

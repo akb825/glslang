@@ -1523,7 +1523,7 @@ int ShLinkExt(
 
     if (linker == nullptr)
         return 0;
-    
+
     SetThreadPoolAllocator(linker->getPool());
     linker->infoSink.info.erase();
 
@@ -1946,6 +1946,11 @@ bool TProgram::link(EShMessages messages)
 
     for (int s = 0; s < EShLangCount; ++s) {
         if (! linkStage((EShLanguage)s, messages))
+            error = true;
+    }
+
+    if (!error) {
+        if (! crossStageCheck(messages))
             error = true;
     }
 
